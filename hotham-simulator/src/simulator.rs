@@ -47,7 +47,6 @@ use std::{
 };
 use winit::event::{DeviceEvent, VirtualKeyCode};
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
 use winit::{
     dpi::PhysicalSize,
     event::{Event, WindowEvent},
@@ -124,21 +123,26 @@ pub unsafe extern "system" fn create_instance(
     Result::SUCCESS
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub unsafe extern "system" fn create_vulkan_instance(
     _instance: Instance,
     create_info: *const VulkanInstanceCreateInfoKHR,
     vulkan_instance: *mut VkInstance,
     vulkan_result: *mut VkResult,
 ) -> Result {
+    dbg!({ *create_info }.vulkan_create_info);
     let vulkan_create_info: &ash::vk::InstanceCreateInfo =
-        transmute(&(*create_info).vulkan_create_info);
+        { { *create_info }.vulkan_create_info as *const ash::vk::InstanceCreateInfo }
+            .as_ref()
+            .unwrap();
     let get_instance_proc_adddr = (*create_info).pfn_get_instance_proc_addr.unwrap();
     let vk_create_instance = CStr::from_bytes_with_nul_unchecked(b"vkCreateInstance\0").as_ptr();
     let create_instance: vk::PFN_vkCreateInstance =
         transmute(get_instance_proc_adddr(ptr::null(), vk_create_instance));
     let mut instance = vk::Instance::null();
 
+    #[cfg(target_os = "macos")]
+    let event_loop: EventLoop<()> = EventLoop::new();
+    #[cfg(not(target_os = "macos"))]
     let event_loop: EventLoop<()> = EventLoop::new_any_thread();
     let window = WindowBuilder::new()
         .with_visible(false)
@@ -146,23 +150,24 @@ pub unsafe extern "system" fn create_vulkan_instance(
         .unwrap();
 
     let mut create_info = *vulkan_create_info;
-    let mut enabled_extensions = ash_window::enumerate_required_extensions(&window).unwrap();
+    let mut enabled_extensions = ash_window::enumerate_required_extensions(&window)
+        .unwrap()
+        .to_vec();
     let xr_extensions = slice::from_raw_parts(
         create_info.pp_enabled_extension_names,
         create_info.enabled_extension_count as usize,
     );
+    dbg!(&enabled_extensions);
+    dbg!(&create_info);
     for ext in &(*xr_extensions) {
-        enabled_extensions.push(CStr::from_ptr(*ext));
+        enabled_extensions.push(*ext);
     }
 
-    let enabled_extensions = enabled_extensions
-        .iter()
-        .map(|e| e.as_ptr())
-        .collect::<Vec<_>>();
+    let enabled_extensions = enabled_extensions.iter().map(|e| *e).collect::<Vec<_>>();
     create_info.enabled_extension_count = enabled_extensions.len() as _;
     create_info.pp_enabled_extension_names = enabled_extensions.as_ptr();
 
-    let entry = AshEntry::new().unwrap();
+    let entry = AshEntry::load().unwrap();
     let result = create_instance(&create_info, ptr::null(), &mut instance);
     *vulkan_result = result.as_raw();
     if result != vk::Result::SUCCESS {
@@ -191,7 +196,10 @@ pub unsafe extern "system" fn create_vulkan_device(
     *vulkan_result = ash::vk::Result::SUCCESS.as_raw();
 
     #[allow(clippy::transmute_ptr_to_ref)] // TODO We shouldn't get a `&mut` from a `*const`.
-    let create_info: &mut DeviceCreateInfo = transmute((*create_info).vulkan_create_info);
+    let mut create_info: DeviceCreateInfo = *((*create_info).vulkan_create_info
+        as *const DeviceCreateInfo)
+        .as_ref()
+        .unwrap();
     println!(
         "[HOTHAM_SIMULATOR] Create vulkan device called with: {:?}",
         create_info
@@ -202,6 +210,12 @@ pub unsafe extern "system" fn create_vulkan_device(
     )
     .to_vec();
     extensions.push(khr::Swapchain::name().as_ptr());
+
+    dbg!(extensions
+        .clone()
+        .into_iter()
+        .map(|p| CStr::from_ptr(p))
+        .collect::<Vec<_>>());
     create_info.pp_enabled_extension_names = extensions.as_ptr();
     create_info.enabled_extension_count = extensions.len() as u32;
 
@@ -212,7 +226,7 @@ pub unsafe extern "system" fn create_vulkan_device(
     let mut state = STATE.lock().unwrap();
     let vulkan_instance = state.vulkan_instance.as_ref().unwrap();
     let physical_device = state.physical_device;
-    let device = vulkan_instance.create_device(physical_device, create_info, None);
+    let device = vulkan_instance.create_device(physical_device, &create_info, None);
     match device {
         Err(e) => {
             *vulkan_result = e.as_raw();
@@ -300,7 +314,7 @@ pub unsafe extern "system" fn get_vulkan_physical_device(
     vk_physical_device: *mut VkPhysicalDevice,
 ) -> Result {
     // Create an entry
-    let entry = AshEntry::new().unwrap();
+    let entry = AshEntry::load().unwrap();
 
     // Create an instance wrapping the instance we were passed
     let ash_instance = AshInstance::load(entry.static_fn(), transmute(vk_instance));
@@ -977,7 +991,6 @@ pub unsafe extern "system" fn enumerate_view_configuration_views(
     Result::SUCCESS
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub unsafe extern "system" fn create_xr_swapchain(
     _session: Session,
     create_info: *const SwapchainCreateInfo,
@@ -1036,7 +1049,6 @@ fn create_multiview_image_views(
         .collect::<Vec<_>>()
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
 unsafe fn build_swapchain(state: &mut MutexGuard<State>) -> vk::SwapchainKHR {
     let entry = state.vulkan_entry.as_ref().unwrap().clone();
     let instance = state.vulkan_instance.as_ref().unwrap().clone();
@@ -1049,7 +1061,7 @@ unsafe fn build_swapchain(state: &mut MutexGuard<State>) -> vk::SwapchainKHR {
     let (swapchain_tx, swapchain_rx) = channel();
     let (event_tx, event_rx) = channel();
     let window_thread_handle = thread::spawn(move || {
-        let mut event_loop: EventLoop<()> = EventLoop::new_any_thread();
+        let mut event_loop: EventLoop<()> = EventLoop::new();
         let visible = true;
         println!(
             "[HOTHAM_SIMULATOR] Creating window with visible {}..",
@@ -1765,15 +1777,21 @@ pub unsafe extern "system" fn get_vulkan_instance_extensions(
     buffer_count_output: *mut u32,
     buffer: *mut c_char,
 ) -> Result {
+    #[cfg(not(target_os = "macos"))]
     let event_loop: EventLoop<()> = EventLoop::new_any_thread();
+    #[cfg(target_os = "macos")]
+    let event_loop: EventLoop<()> = EventLoop::new();
     let window = WindowBuilder::new()
         // .with_drag_and_drop(false)
         .with_visible(false)
         .build(&event_loop)
         .unwrap();
-    let enabled_extensions = ash_window::enumerate_required_extensions(&window).unwrap();
+    let enabled_extensions = ash_window::enumerate_required_extensions(&window)
+        .unwrap()
+        .to_vec();
     let extensions = enabled_extensions
         .iter()
+        .map(|p| CStr::from_ptr(*p))
         .map(|e| e.to_str().unwrap())
         .collect::<Vec<&str>>()
         .join(" ")
@@ -1787,6 +1805,8 @@ pub unsafe extern "system" fn get_vulkan_instance_extensions(
     }
 
     let extensions = CString::from_vec_unchecked(extensions);
+
+    dbg!(&extensions);
 
     let buffer = slice::from_raw_parts_mut(buffer, length);
     let bytes = extensions.as_bytes_with_nul();
