@@ -48,6 +48,7 @@ use std::{
     thread,
 };
 use winit::event::{DeviceEvent, VirtualKeyCode};
+use winit::window::Window;
 
 use winit::{
     dpi::PhysicalSize,
@@ -2007,95 +2008,107 @@ pub fn find_memory_type(
     panic!("Unable to find suitable memory type")
 }
 
+fn new_swapchain_and_window<T>(
+    state: &mut MutexGuard<State>,
+    event_loop: &EventLoop<T>,
+) -> (Window, SurfaceKHR, vk::SwapchainKHR) {
+    let window = WindowBuilder::new()
+        .with_inner_size(PhysicalSize::new(VIEWPORT_WIDTH, VIEWPORT_HEIGHT))
+        .with_title("Hotham Simulator")
+        .with_visible(true)
+        // .with_drag_and_drop(false)
+        .build(&event_loop)
+        .unwrap();
+
+    let visible = true;
+    println!(
+        "[HOTHAM_SIMULATOR] Creating window with visible {}..",
+        visible
+    );
+    println!("WINDOW SCALE FACTOR, {:?}", window.scale_factor());
+    println!("[HOTHAM_SIMULATOR] ..done.");
+    let extent = vk::Extent2D {
+        height: VIEWPORT_HEIGHT,
+        width: VIEWPORT_WIDTH,
+    };
+    let entry = state.vulkan_entry.as_ref().unwrap().clone();
+    let instance = state.vulkan_instance.as_ref().unwrap().clone();
+    let device = state.device.as_ref().unwrap();
+    let physical_device = state.physical_device;
+    let swapchain_ext = khr::Swapchain::new(&instance, device);
+    let queue_family_index = state.present_queue_family_index;
+    let close_window = state.close_window.clone();
+
+    println!("[HOTHAM_SIMULATOR] Creating surface..");
+    let surface = unsafe { ash_window::create_surface(&entry, &instance, &window, None).unwrap() };
+    println!("[HOTHAM_SIMULATOR] ..done");
+    let swapchain_support_details = SwapChainSupportDetails::query_swap_chain_support(
+        &entry,
+        &instance,
+        physical_device,
+        surface,
+        queue_family_index,
+    );
+
+    let create_info = vk::SwapchainCreateInfoKHR::builder()
+        .min_image_count(3)
+        .surface(surface)
+        .image_format(SWAPCHAIN_COLOUR_FORMAT)
+        .image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
+        .image_array_layers(1)
+        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .image_extent(extent)
+        .queue_family_indices(&[])
+        .pre_transform(swapchain_support_details.capabilities.current_transform)
+        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+        .present_mode(vk::PresentModeKHR::IMMEDIATE)
+        .clipped(true)
+        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT);
+
+    println!("[HOTHAM_SIMULATOR] About to create swapchain..");
+    let swapchain = unsafe { swapchain_ext.create_swapchain(&create_info, None) }.unwrap();
+    println!(
+        "[HOTHAM_SIMULATOR] Created swapchain: {:?}. Sending..",
+        swapchain
+    );
+
+    (window, surface, swapchain)
+}
+
 fn openxr_sim_run_main_loop(
     in_state: Option<&mut MutexGuard<State>>,
 ) -> Option<(SurfaceKHR, vk::SwapchainKHR)> {
     let mut ret = None;
     thread_local! {
-    static WIN_STATE: RefCell<Option<(winit::window::Window, EventLoop<()>)>> = RefCell::new(None);
+    static WIN_STATE: (RefCell<Option<EventLoop<()>>>, RefCell<Vec<Window>>) = (RefCell::new(None), RefCell::new(vec![]));
     }
     WIN_STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        let (window, event_loop) = state.get_or_insert_with(|| {
-            let in_state = in_state.unwrap();
-            let event_loop = EventLoop::new();
-            let window = WindowBuilder::new()
-                .with_inner_size(PhysicalSize::new(VIEWPORT_WIDTH, VIEWPORT_HEIGHT))
-                .with_title("Hotham Simulator")
-                .with_visible(true)
-                // .with_drag_and_drop(false)
-                .build(&event_loop)
-                .unwrap();
+        let mut event_loop = state.0.borrow_mut();
+        let event_loop = event_loop.get_or_insert_with(|| EventLoop::new());
 
-            let visible = true;
-            println!(
-                "[HOTHAM_SIMULATOR] Creating window with visible {}..",
-                visible
-            );
-            println!("WINDOW SCALE FACTOR, {:?}", window.scale_factor());
-            println!("[HOTHAM_SIMULATOR] ..done.");
-            let extent = vk::Extent2D {
-                height: VIEWPORT_HEIGHT,
-                width: VIEWPORT_WIDTH,
-            };
-            let entry = in_state.vulkan_entry.as_ref().unwrap().clone();
-            let instance = in_state.vulkan_instance.as_ref().unwrap().clone();
-            let device = in_state.device.as_ref().unwrap();
-            let physical_device = in_state.physical_device;
-            let swapchain_ext = khr::Swapchain::new(&instance, device);
-            let queue_family_index = in_state.present_queue_family_index;
-            let close_window = in_state.close_window.clone();
-
-            println!("[HOTHAM_SIMULATOR] Creating surface..");
-            let surface =
-                unsafe { ash_window::create_surface(&entry, &instance, &window, None).unwrap() };
-            println!("[HOTHAM_SIMULATOR] ..done");
-            let swapchain_support_details = SwapChainSupportDetails::query_swap_chain_support(
-                &entry,
-                &instance,
-                physical_device,
-                surface,
-                queue_family_index,
-            );
-
-            let create_info = vk::SwapchainCreateInfoKHR::builder()
-                .min_image_count(3)
-                .surface(surface)
-                .image_format(SWAPCHAIN_COLOUR_FORMAT)
-                .image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
-                .image_array_layers(1)
-                .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .image_extent(extent)
-                .queue_family_indices(&[])
-                .pre_transform(swapchain_support_details.capabilities.current_transform)
-                .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-                .present_mode(vk::PresentModeKHR::IMMEDIATE)
-                .clipped(true)
-                .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT);
-
-            println!("[HOTHAM_SIMULATOR] About to create swapchain..");
-            let swapchain = unsafe { swapchain_ext.create_swapchain(&create_info, None) }.unwrap();
-            println!(
-                "[HOTHAM_SIMULATOR] Created swapchain: {:?}. Sending..",
-                swapchain
-            );
-
-            ret = Some((surface, swapchain));
-            (window, event_loop)
-        });
+        match in_state {
+            Some(in_state) => {
+                let (window, surface, swapchain) = new_swapchain_and_window(in_state, event_loop);
+                state.1.borrow_mut().push(window);
+                ret = Some((surface, swapchain));
+            }
+            None => {}
+        }
 
         event_loop.run_return(|event, _, control_flow| {
             //  only run one tick
             *control_flow = ControlFlow::Wait;
             dbg!(&event);
             match event {
-                Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    window_id,
-                } if window_id == window.id() => *control_flow = ControlFlow::Exit,
+                // Event::WindowEvent {
+                //     event: WindowEvent::CloseRequested,
+                //     window_id,
+                // } if window_id == window.id() => *control_flow = ControlFlow::Exit,
                 Event::LoopDestroyed => {}
                 Event::MainEventsCleared => {
-                    // window.request_redraw();
+                    for window in state.1.borrow().iter() {
+                        window.request_redraw();
+                    }
                     *control_flow = ControlFlow::Exit;
                 }
                 Event::RedrawRequested(_window_id) => {}
