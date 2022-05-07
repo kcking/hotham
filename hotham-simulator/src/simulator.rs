@@ -6,9 +6,9 @@
 )]
 use crate::openxr_loader::{self, XrExtensionProperties, XrResult};
 use crate::space_state::SpaceState;
-use crate::state::State;
+use crate::state::{State, SwapchainState};
 
-use ash::vk::SurfaceKHR;
+use ash::vk::{SurfaceKHR, SwapchainKHR};
 use ash::{
     extensions::khr,
     util::read_spv,
@@ -251,8 +251,6 @@ pub unsafe extern "system" fn create_vulkan_device(
 }
 
 unsafe fn create_and_store_device(device: ash::Device, queue_family_index: u32, state: &mut State) {
-    let info = vk::FenceCreateInfo::default();
-    state.swapchain_fence = device.create_fence(&info, None).unwrap();
     state.command_pool = device
         .create_command_pool(
             &vk::CommandPoolCreateInfo::builder()
@@ -941,7 +939,6 @@ pub unsafe extern "system" fn wait_frame(
 ) -> Result {
     let state = STATE.lock().unwrap();
     let _device = state.device.as_ref().unwrap();
-    let _fence = state.swapchain_fence;
 
     // device.wait_for_fences(&[fence], true, u64::MAX).unwrap();
     *frame_state = FrameState {
@@ -951,6 +948,7 @@ pub unsafe extern "system" fn wait_frame(
         predicted_display_period: Duration::from_nanos(1),
         should_render: TRUE,
     };
+
     Result::SUCCESS
 }
 
@@ -1004,18 +1002,39 @@ pub unsafe extern "system" fn create_xr_swapchain(
     println!("[HOTHAM_SIMULATOR] Creating XR Swapchain..");
     let mut state = STATE.lock().unwrap();
     let format = vk::Format::from_raw((*create_info).format as _);
-    let (multiview_images, multiview_images_memory) =
-        create_multiview_images(&state, &(*create_info));
     println!("[HOTHAM_SIMULATOR] ..done.");
-
-    state.multiview_images = multiview_images;
-    state.multiview_images_memory = multiview_images_memory;
-    state.multiview_image_views = create_multiview_image_views(&state, format);
 
     println!("[HOTHAM_SIMULATOR] Building windows swapchain..");
     let windows_swapchain = build_swapchain(&mut state);
     println!("[HOTHAM_SIMULATOR] ..done");
     let s = Swapchain::from_raw(windows_swapchain.as_raw());
+    let info = vk::FenceCreateInfo::default();
+    let fence = state
+        .device
+        .as_ref()
+        .unwrap()
+        .create_fence(&info, None)
+        .unwrap();
+    state.swapchain_fences.insert(s.into_raw(), fence);
+
+    let ext = khr::Swapchain::new(
+        state.vulkan_instance.as_ref().unwrap(),
+        state.device.as_ref().unwrap(),
+    );
+
+    let images = ext.get_swapchain_images(windows_swapchain).unwrap();
+    let image_views = create_multiview_image_views(&state, format, &images);
+    let swapchain_state = SwapchainState {
+        swapchain: SwapchainKHR::from_raw(windows_swapchain.as_raw()),
+        images,
+        image_views,
+        fence,
+    };
+
+    state
+        .swapchains
+        .insert(windows_swapchain.as_raw(), swapchain_state);
+
     println!("[HOTHAM_SIMULATOR] Returning with {:?}", s);
     *swapchain = s;
     Result::SUCCESS
@@ -1024,11 +1043,11 @@ pub unsafe extern "system" fn create_xr_swapchain(
 fn create_multiview_image_views(
     state: &MutexGuard<State>,
     format: vk::Format,
+    images: &[vk::Image],
 ) -> Vec<vk::ImageView> {
     let device = state.device.as_ref().unwrap();
     let aspect_mask = vk::ImageAspectFlags::COLOR;
-    state
-        .multiview_images
+    images
         .iter()
         .map(|image| {
             let subresource_range = vk::ImageSubresourceRange::builder()
@@ -1036,7 +1055,7 @@ fn create_multiview_image_views(
                 .base_mip_level(0)
                 .level_count(1)
                 .base_array_layer(0)
-                .layer_count(NUM_VIEWS as _)
+                .layer_count(1)
                 .build();
 
             let create_info = vk::ImageViewCreateInfo::builder()
@@ -1075,20 +1094,23 @@ unsafe fn build_swapchain(mut state: &mut MutexGuard<State>) -> vk::SwapchainKHR
     state.internal_swapchain_image_views = create_swapchain_image_views(state);
 
     println!("[HOTHAM_SIMULATOR] Creating descriptor sets..");
-    state.descriptor_sets = create_descriptor_sets(state);
-    println!("[HOTHAM_SIMULATOR] Creating render pass..");
-    state.render_pass = create_render_pass(state);
-    println!("[HOTHAM_SIMULATOR] ..done!");
-    state.framebuffers = create_framebuffers(state);
-    state.pipeline_layout = create_pipeline_layout(state);
-    println!("[HOTHAM_SIMULATOR] Creating pipelines..");
-    state.pipelines = create_pipelines(state);
-    println!("[HOTHAM_SIMULATOR] ..done!");
-    state.command_buffers = create_command_buffers(state);
+    // state.descriptor_sets = create_descriptor_sets(state, swapchain);
+    // println!("[HOTHAM_SIMULATOR] Creating render pass..");
+    // state.render_pass = create_render_pass(state);
+    // println!("[HOTHAM_SIMULATOR] ..done!");
+    // state.framebuffers = create_framebuffers(state);
+    // state.pipeline_layout = create_pipeline_layout(state);
+    // println!("[HOTHAM_SIMULATOR] Creating pipelines..");
+    // state.pipelines = create_pipelines(state);
+    // println!("[HOTHAM_SIMULATOR] ..done!");
+    // state.command_buffers = create_command_buffers(state);
     swapchain
 }
 
-unsafe fn create_descriptor_sets(state: &mut MutexGuard<State>) -> Vec<vk::DescriptorSet> {
+unsafe fn create_descriptor_sets(
+    state: &mut MutexGuard<State>,
+    swapchain: SwapchainKHR,
+) -> Vec<vk::DescriptorSet> {
     let device = state.device.as_ref().unwrap();
     let image_views = &state.multiview_image_views;
     // descriptor pool
@@ -1245,7 +1267,7 @@ fn create_framebuffers(state: &mut MutexGuard<State>) -> Vec<vk::Framebuffer> {
 }
 
 pub unsafe extern "system" fn enumerate_swapchain_images(
-    _swapchain: Swapchain,
+    swapchain: Swapchain,
     image_capacity_input: u32,
     image_count_output: *mut u32,
     images: *mut SwapchainImageBaseHeader,
@@ -1255,7 +1277,8 @@ pub unsafe extern "system" fn enumerate_swapchain_images(
         return Result::SUCCESS;
     }
     println!("[HOTHAM_SIMULATOR] Creating swapchain images..");
-    let multiview_images = &STATE.lock().unwrap().multiview_images;
+    let state = STATE.lock().unwrap();
+    let multiview_images = &state.swapchains.get(&swapchain.into_raw()).unwrap().images;
 
     let images = slice::from_raw_parts_mut(images as _, 3);
     for i in 0..3 {
@@ -1294,7 +1317,7 @@ fn create_multiview_images(
         .image_type(vk::ImageType::TYPE_2D)
         .extent(extent)
         .mip_levels(1)
-        .array_layers(NUM_VIEWS as _)
+        .array_layers(1)
         .format(format)
         .tiling(tiling)
         .initial_layout(vk::ImageLayout::UNDEFINED)
@@ -1355,19 +1378,26 @@ pub unsafe extern "system" fn acquire_swapchain_image(
     _acquire_info: *const SwapchainImageAcquireInfo,
     index: *mut u32,
 ) -> Result {
-    // println!("[HOTHAM_SIMULATOR] Acquire swapchain image called..");
+    println!("[HOTHAM_SIMULATOR] Acquire swapchain image called..");
     let swapchain = vk::SwapchainKHR::from_raw(swapchain.into_raw());
     let state = STATE.lock().unwrap();
     let device = state.device.as_ref().unwrap();
     let ext = khr::Swapchain::new(state.vulkan_instance.as_ref().unwrap(), device);
-    let fence = state.swapchain_fence;
+    let fence = state
+        .swapchain_fences
+        .get(&swapchain.as_raw())
+        .unwrap()
+        .clone();
+    dbg!("reset fence");
     device
         .reset_fences(&[fence])
         .expect("Failed to reset fence");
 
+    dbg!("acquire");
     let (i, _) = ext
         .acquire_next_image(swapchain, u64::MAX - 1, vk::Semaphore::null(), fence)
         .unwrap();
+    dbg!("wait");
     device
         .wait_for_fences(&[fence], true, u64::MAX)
         .expect("Failed to wait for fence");
@@ -1375,9 +1405,10 @@ pub unsafe extern "system" fn acquire_swapchain_image(
 
     *index = i;
 
+    dbg!("lock");
     let mut state = STATE.lock().unwrap();
     state.image_index = i;
-    // println!("[HOTHAM_SIMULATOR] Done. Index is {}", i);
+    println!("[HOTHAM_SIMULATOR] Done. Index is {}", i);
     Result::SUCCESS
 }
 
@@ -1492,54 +1523,42 @@ pub unsafe extern "system" fn end_frame(
     _frame_end_info: *const FrameEndInfo,
 ) -> Result {
     let mut state = STATE.lock().unwrap();
+    dbg!("end_frame::locked()");
     let instance = state.vulkan_instance.as_ref().unwrap();
     let device = state.device.as_ref().unwrap();
     let swapchain = state.internal_swapchain;
     let swapchains = [swapchain];
     let queue = state.present_queue;
     let index = state.image_index as usize;
-    let command_buffers = [state.command_buffers[index]];
-    let image = state.multiview_images[index];
-    transition_image_layout(
-        device,
-        queue,
-        state.command_pool,
-        image,
-        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-    );
-
-    let image_indices = [index as u32];
+    // let command_buffers = [state.command_buffers[index]];
     let render_complete = [state.render_complete_semaphores[index]];
 
-    let submit_info = vk::SubmitInfo::builder()
-        .command_buffers(&command_buffers)
-        .signal_semaphores(&render_complete)
-        .build();
+    // let submit_info = vk::SubmitInfo::builder()
+    //     .command_buffers(&command_buffers)
+    //     .signal_semaphores(&render_complete)
+    //     .build();
 
-    let submits = [submit_info];
+    // let submits = [submit_info];
 
-    device
-        .queue_submit(state.present_queue, &submits, vk::Fence::null())
-        .expect("Unable to submit to queue");
+    // device
+    //     .queue_submit(state.present_queue, &submits, vk::Fence::null())
+    //     .expect("Unable to submit to queue");
 
+    let swapchains = state
+        .swapchains
+        .values()
+        .map(|st| st.swapchain)
+        .collect::<Vec<_>>();
+    let indices = vec![index as u32; state.swapchains.len()];
     let present_info = vk::PresentInfoKHR::builder()
         .wait_semaphores(&render_complete)
         .swapchains(&swapchains)
-        .image_indices(&image_indices);
+        .image_indices(&indices);
 
     let ext = khr::Swapchain::new(instance, device);
 
-    match ext.queue_present(queue, &present_info) {
+    let ret = match ext.queue_present(queue, &present_info) {
         Ok(_) => {
-            transition_image_layout(
-                device,
-                queue,
-                state.command_pool,
-                image,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            );
             state.frame_count += 1;
             Result::SUCCESS
         }
@@ -1547,7 +1566,9 @@ pub unsafe extern "system" fn end_frame(
             eprintln!("[HOTHAM_SIMULATOR] !ERROR RENDERING FRAME! {:?}", e);
             Result::ERROR_VALIDATION_FAILURE
         }
-    }
+    };
+    openxr_sim_run_main_loop(None);
+    ret
 }
 
 pub unsafe extern "system" fn request_exit_session(_session: Session) -> Result {
@@ -1810,14 +1831,15 @@ pub fn transition_image_layout(
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
 ) {
-    // println!("[HOTHAM_SIMULATOR] Transitioning image {:?}", image);
+    return;
+    println!("[HOTHAM_SIMULATOR] Transitioning image {:?}", image);
     let command_buffer = begin_single_time_commands(device, command_pool);
     let subresource_range = vk::ImageSubresourceRange::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .base_mip_level(0)
         .level_count(1)
         .base_array_layer(0)
-        .layer_count(NUM_VIEWS as _)
+        .layer_count(1)
         .build();
 
     let (src_access_mask, dst_access_mask, src_stage, dst_stage) =
@@ -1849,7 +1871,7 @@ pub fn transition_image_layout(
         )
     };
     end_single_time_commands(device, queue, command_buffer, command_pool);
-    // println!("[HOTHAM_SIMULATOR] Done transitioning image {:?}", image);
+    println!("[HOTHAM_SIMULATOR] Done transitioning image {:?}", image);
 }
 
 pub fn begin_single_time_commands(
@@ -1886,6 +1908,7 @@ pub fn end_single_time_commands(
     command_buffer: vk::CommandBuffer,
     command_pool: vk::CommandPool,
 ) {
+    return;
     unsafe {
         device
             .end_command_buffer(command_buffer)
@@ -2078,6 +2101,7 @@ fn new_swapchain_and_window<T>(
 fn openxr_sim_run_main_loop(
     in_state: Option<&mut MutexGuard<State>>,
 ) -> Option<(SurfaceKHR, vk::SwapchainKHR)> {
+    dbg!(in_state.is_some());
     let mut ret = None;
     thread_local! {
     static WIN_STATE: (RefCell<Option<EventLoop<()>>>, RefCell<Vec<Window>>) = (RefCell::new(None), RefCell::new(vec![]));
@@ -2098,7 +2122,7 @@ fn openxr_sim_run_main_loop(
         event_loop.run_return(|event, _, control_flow| {
             //  only run one tick
             *control_flow = ControlFlow::Wait;
-            dbg!(&event);
+            // dbg!(&event);
             match event {
                 // Event::WindowEvent {
                 //     event: WindowEvent::CloseRequested,

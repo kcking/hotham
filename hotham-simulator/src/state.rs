@@ -21,6 +21,13 @@ use crate::{
     simulator::{HothamInputEvent, NUM_VIEWS},
     space_state::SpaceState,
 };
+
+pub struct SwapchainState {
+    pub swapchain: SwapchainKHR,
+    pub images: Vec<vk::Image>,
+    pub image_views: Vec<vk::ImageView>,
+    pub fence: vk::Fence,
+}
 // use crate::simulator::spa
 pub struct State {
     pub vulkan_entry: Option<AshEntry>,
@@ -28,7 +35,8 @@ pub struct State {
     pub physical_device: vk::PhysicalDevice,
     pub device: Option<Device>,
     pub session_state: SessionState,
-    pub swapchain_fence: vk::Fence,
+    pub swapchain_fences: HashMap<u64, vk::Fence>,
+    pub swapchains: HashMap<u64, SwapchainState>,
     pub internal_swapchain: SwapchainKHR,
     pub internal_swapchain_images: Vec<vk::Image>,
     pub internal_swapchain_image_views: Vec<vk::ImageView>,
@@ -71,7 +79,8 @@ impl Default for State {
             physical_device: vk::PhysicalDevice::null(),
             device: None,
             session_state: SessionState::UNKNOWN,
-            swapchain_fence: vk::Fence::null(),
+            swapchain_fences: Default::default(),
+            swapchains: Default::default(),
             internal_swapchain: SwapchainKHR::null(),
             image_index: 4,
             present_queue: vk::Queue::null(),
