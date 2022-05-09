@@ -117,11 +117,18 @@ pub unsafe extern "C" fn enumerate_instance_extension_properties(
     Result::SUCCESS.into_raw()
 }
 
+use std::sync::Once;
+
+static START: Once = Once::new();
+
 #[no_mangle]
 pub unsafe extern "system" fn create_instance(
     _create_info: *const InstanceCreateInfo,
     instance: *mut Instance,
 ) -> Result {
+    START.call_once(|| {
+        env_logger::init();
+    });
     *instance = Instance::from_raw(42);
 
     Result::SUCCESS
@@ -658,6 +665,7 @@ pub unsafe extern "system" fn wait_frame(
     _frame_wait_info: *const FrameWaitInfo,
     frame_state: *mut FrameState,
 ) -> Result {
+    std::thread::sleep(std::time::Duration::from_micros(1_000_000 / 60));
     let state = STATE.lock().unwrap();
     let _device = state.device.as_ref().unwrap();
 
@@ -693,10 +701,10 @@ pub unsafe extern "system" fn enumerate_view_configuration_views(
         return Result::SUCCESS;
     }
 
-    println!(
-        "[HOTHAM_SIMULATOR] enumerate_view_configuration_views called with: {}",
-        view_capacity_input
-    );
+    // println!(
+    //     "[HOTHAM_SIMULATOR] enumerate_view_configuration_views called with: {}",
+    //     view_capacity_input
+    // );
 
     let views = std::ptr::slice_from_raw_parts_mut(views, NUM_VIEWS);
 
@@ -1099,7 +1107,7 @@ pub unsafe extern "system" fn acquire_swapchain_image(
     _acquire_info: *const SwapchainImageAcquireInfo,
     index: *mut u32,
 ) -> Result {
-    println!("[HOTHAM_SIMULATOR] Acquire swapchain image called..");
+    // println!("[HOTHAM_SIMULATOR] Acquire swapchain image called..");
     let swapchain = vk::SwapchainKHR::from_raw(swapchain.into_raw());
     let state = STATE.lock().unwrap();
     let device = state.device.as_ref().unwrap();
@@ -1109,27 +1117,16 @@ pub unsafe extern "system" fn acquire_swapchain_image(
         .get(&swapchain.as_raw())
         .unwrap()
         .clone();
-    dbg!("reset fence");
-    // device
-    //     .reset_fences(&[fence])
-    //     .expect("Failed to reset fence");
-
-    dbg!("acquire");
     let (i, _) = ext
         .acquire_next_image(swapchain, u64::MAX - 1, vk::Semaphore::null(), fence)
         .unwrap();
-    dbg!("wait");
-    // device
-    //     .wait_for_fences(&[fence], true, u64::MAX)
-    //     .expect("Failed to wait for fence");
     drop(state);
 
     *index = i;
 
-    dbg!("lock");
     let mut state = STATE.lock().unwrap();
     state.image_index = i;
-    println!("[HOTHAM_SIMULATOR] Done. Index is {}", i);
+    // println!("[HOTHAM_SIMULATOR] Done. Index is {}", i);
     Result::SUCCESS
 }
 
@@ -1244,7 +1241,6 @@ pub unsafe extern "system" fn end_frame(
     _frame_end_info: *const FrameEndInfo,
 ) -> Result {
     let mut state = STATE.lock().unwrap();
-    dbg!("end_frame::locked()");
     state.device.as_ref().unwrap().device_wait_idle().unwrap();
     let instance = state.vulkan_instance.as_ref().unwrap();
     let device = state.device.as_ref().unwrap();
@@ -1826,7 +1822,6 @@ fn main_thread_event_loop() -> Arc<RefCell<Option<EventLoop<()>>>> {
 fn openxr_sim_run_main_loop(
     in_state: Option<&mut MutexGuard<State>>,
 ) -> Option<(SurfaceKHR, vk::SwapchainKHR)> {
-    dbg!(in_state.is_some());
     let mut ret = None;
     thread_local! {
     static WIN_STATE: (RefCell<Option<EventLoop<()>>>, RefCell<Vec<Window>>) = (RefCell::new(None), RefCell::new(vec![]));
@@ -1835,19 +1830,15 @@ fn openxr_sim_run_main_loop(
         let mut event_loop = main_thread_event_loop();
         let mut event_loop = event_loop.borrow_mut();
         let event_loop = event_loop.get_or_insert_with(|| EventLoop::new());
-        let mut window: &Window;
+
         let mut windows = state.1.borrow_mut();
-        if windows.is_empty() {
-            let new_window = new_window(event_loop);
-            windows.push(new_window);
-            window = windows.get(0).unwrap();
-        } else {
-            window = windows.get(0).unwrap();
-        }
 
         match in_state {
             Some(in_state) => {
-                let (surface, swapchain) = new_swapchain_and_window(in_state, event_loop, window);
+                let new_window = new_window(event_loop);
+                windows.push(new_window);
+                let (surface, swapchain) =
+                    new_swapchain_and_window(in_state, event_loop, &windows.last().unwrap());
                 ret = Some((surface, swapchain));
             }
             None => {}
@@ -1855,8 +1846,7 @@ fn openxr_sim_run_main_loop(
 
         event_loop.run_return(|event, _, control_flow| {
             //  only run one tick
-            *control_flow = ControlFlow::Wait;
-            dbg!(&event);
+            *control_flow = ControlFlow::ExitWithCode(0);
             match event {
                 // Event::WindowEvent {
                 //     event: WindowEvent::CloseRequested,
@@ -1867,7 +1857,7 @@ fn openxr_sim_run_main_loop(
                     // for window in windows.iter() {
                     // window.request_redraw();
                     // }
-                    *control_flow = ControlFlow::Exit;
+                    *control_flow = ControlFlow::ExitWithCode(0);
                 }
                 Event::RedrawRequested(_window_id) => {}
                 Event::DeviceEvent { event, .. } => match event {
@@ -1885,6 +1875,5 @@ fn openxr_sim_run_main_loop(
             }
         });
     });
-    println!("ret::is_some {}", ret.is_some());
     ret
 }
