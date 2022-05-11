@@ -803,8 +803,14 @@ fn create_multiview_image_views(
 }
 
 unsafe fn build_swapchain(mut state: &mut MutexGuard<State>) -> vk::SwapchainKHR {
-    // let (swapchain_tx, swapchain_rx) = channel();
-    let (event_tx, event_rx) = channel();
+    let tx = if state.event_tx.is_none() {
+        let (tx, rx) = channel();
+        state.event_rx = Some(rx);
+        state.event_tx = Some(tx.clone());
+        tx
+    } else {
+        state.event_tx.clone().unwrap()
+    };
     let (surface, swapchain) = openxr_sim_run_main_loop(Some(state)).unwrap();
 
     let device = state.device.as_ref().unwrap();
@@ -813,7 +819,6 @@ unsafe fn build_swapchain(mut state: &mut MutexGuard<State>) -> vk::SwapchainKHR
     let instance = state.vulkan_instance.as_ref().unwrap().clone();
     let swapchain_ext = khr::Swapchain::new(&instance, device);
 
-    state.event_rx = Some(event_rx);
     state.surface = surface;
     // state.window_thread_handle = Some(window_thread_handle);
     state.internal_swapchain = swapchain;
@@ -1824,7 +1829,7 @@ fn openxr_sim_run_main_loop(
 ) -> Option<(SurfaceKHR, vk::SwapchainKHR)> {
     let mut ret = None;
     thread_local! {
-    static WIN_STATE: (RefCell<Option<EventLoop<()>>>, RefCell<Vec<Window>>) = (RefCell::new(None), RefCell::new(vec![]));
+    static WIN_STATE: (RefCell<Option<EventLoop<()>>>, RefCell<Vec<Window>>, RefCell<Option<std::sync::mpsc::Sender<HothamInputEvent>>>) = (RefCell::new(None), RefCell::new(vec![]), RefCell::new(None));
     }
     WIN_STATE.with(|state| {
         let mut event_loop = main_thread_event_loop();
@@ -1840,6 +1845,11 @@ fn openxr_sim_run_main_loop(
                 let (surface, swapchain) =
                     new_swapchain_and_window(in_state, event_loop, &windows.last().unwrap());
                 ret = Some((surface, swapchain));
+                {
+                    if let Some(tx) = in_state.event_tx.clone() {
+                        state.2.borrow_mut().get_or_insert(tx);
+                    }
+                }
             }
             None => {}
         }
@@ -1848,10 +1858,20 @@ fn openxr_sim_run_main_loop(
             //  only run one tick
             *control_flow = ControlFlow::ExitWithCode(0);
             match event {
-                // Event::WindowEvent {
-                //     event: WindowEvent::CloseRequested,
-                //     window_id,
-                // } if window_id == window.id() => *control_flow = ControlFlow::Exit,
+                Event::WindowEvent {
+                    event: WindowEvent::CloseRequested,
+                    ..
+                } => std::process::exit(0),
+                Event::WindowEvent {
+                    event: WindowEvent::KeyboardInput { input: k, .. },
+                    ..
+                } => {
+                    if let Some(tx) = state.2.borrow().as_ref() {
+                        let _ = tx.send(HothamInputEvent::KeyboardInput {
+                            key: k.virtual_keycode,
+                        });
+                    }
+                }
                 Event::LoopDestroyed => {}
                 Event::MainEventsCleared => {
                     // for window in windows.iter() {
@@ -1860,17 +1880,21 @@ fn openxr_sim_run_main_loop(
                     *control_flow = ControlFlow::ExitWithCode(0);
                 }
                 Event::RedrawRequested(_window_id) => {}
-                Event::DeviceEvent { event, .. } => match event {
-                    // DeviceEvent::Key(k) => event_tx
-                    //     .send(HothamInputEvent::KeyboardInput {
-                    //         key: k.virtual_keycode,
-                    //     })
-                    //     .unwrap(),
-                    // DeviceEvent::MouseMotion { delta: (y, x) } => event_tx
-                    //     .send(HothamInputEvent::MouseInput { x, y })
-                    //     .unwrap(),
-                    _ => {}
-                },
+                Event::DeviceEvent { event, .. } => {
+                    if let Some(tx) = state.2.borrow().as_ref() {
+                        match event {
+                            DeviceEvent::Key(k) => {
+                                let _ = tx.send(HothamInputEvent::KeyboardInput {
+                                    key: k.virtual_keycode,
+                                });
+                            }
+                            DeviceEvent::MouseMotion { delta: (y, x) } => {
+                                let _ = tx.send(HothamInputEvent::MouseInput { x, y });
+                            }
+                            _ => {}
+                        };
+                    }
+                }
                 _ => (),
             }
         });

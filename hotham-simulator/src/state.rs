@@ -11,7 +11,7 @@ use std::{
     fmt::Debug,
     sync::{
         atomic::{AtomicBool, Ordering::Relaxed},
-        mpsc::Receiver,
+        mpsc::{Receiver, Sender},
         Arc,
     },
     thread::JoinHandle,
@@ -69,6 +69,7 @@ pub struct State {
     pub right_hand_space: u64,
     pub view_poses: Vec<Posef>,
     pub event_rx: Option<Receiver<HothamInputEvent>>,
+    pub event_tx: Option<Sender<HothamInputEvent>>,
 }
 
 impl Default for State {
@@ -112,6 +113,7 @@ impl Default for State {
             left_hand_space: 0,
             right_hand_space: 0,
             event_rx: None,
+            event_tx: None,
             view_poses: (0..NUM_VIEWS)
                 .map(|_| {
                     let mut pose = Posef::IDENTITY;
@@ -205,36 +207,39 @@ impl State {
         let mut x_rot = 0.0;
         let mut y_rot = 0.0;
 
-        match self.event_rx.as_ref()?.try_recv().ok()? {
-            HothamInputEvent::KeyboardInput { key } => match key? {
-                winit::event::VirtualKeyCode::W => {
-                    z_delta = -0.05;
+        while let Some(ev) = self.event_rx.as_ref()?.try_recv().ok() {
+            match ev {
+                HothamInputEvent::KeyboardInput { key } => match key? {
+                    winit::event::VirtualKeyCode::W => {
+                        z_delta = -0.05;
+                    }
+                    winit::event::VirtualKeyCode::S => {
+                        z_delta = 0.05;
+                    }
+                    winit::event::VirtualKeyCode::A => {
+                        x_delta = -0.05;
+                    }
+                    winit::event::VirtualKeyCode::D => {
+                        x_delta = 0.05;
+                    }
+                    _ => {}
+                },
+                HothamInputEvent::MouseInput { x, y } => {
+                    x_rot = -(x * 0.001) as _;
+                    y_rot = -(y * 0.001) as _;
                 }
-                winit::event::VirtualKeyCode::S => {
-                    z_delta = 0.05;
-                }
-                winit::event::VirtualKeyCode::A => {
-                    x_delta = -0.05;
-                }
-                winit::event::VirtualKeyCode::D => {
-                    x_delta = 0.05;
-                }
-                _ => {}
-            },
-            HothamInputEvent::MouseInput { x, y } => {
-                x_rot = -(x * 0.001) as _;
-                y_rot = -(y * 0.001) as _;
             }
         }
 
-        let pose = &mut self.view_poses[0];
-        let orientation = &mut pose.orientation;
-        orientation.x = (orientation.x + x_rot).clamp(-1.0, 1.0);
-        orientation.y = (orientation.y + y_rot).clamp(-1.0, 1.0);
+        for pose in &mut self.view_poses {
+            let orientation = &mut pose.orientation;
+            orientation.x = (orientation.x + x_rot).clamp(-1.0, 1.0);
+            orientation.y = (orientation.y + y_rot).clamp(-1.0, 1.0);
 
-        let position = &mut pose.position;
-        position.z += z_delta;
-        position.x += x_delta;
+            let position = &mut pose.position;
+            position.z += z_delta;
+            position.x += x_delta;
+        }
 
         // let left_hand = self.left_hand_space;
         // let right_hand = self.right_hand_space;
