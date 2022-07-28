@@ -152,7 +152,9 @@ impl State {
             let entry = self.vulkan_entry.take().unwrap();
             device.device_wait_idle().unwrap();
             self.close_window.store(true, Relaxed);
-            self.window_thread_handle.take().unwrap().join().unwrap();
+            if let Some(handle) = self.window_thread_handle.take() {
+                handle.join().unwrap();
+            }
 
             let swapchain_ext = khr::Swapchain::new(&instance, &device);
             swapchain_ext.destroy_swapchain(self.internal_swapchain, None);
