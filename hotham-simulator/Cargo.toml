@@ -16,7 +16,9 @@ env_logger = "0.9.0"
 lazy_static = "1.4.0"
 openxr-sys = "0.9"
 rand = "0.8"
-winit = { version = "0.26.1", path = "../../winit" }
+#   use winit from git until other upstream crates have updated to new
+#   raw-window-handle that is used by winit 0.27
+winit = { git = "https://github.com/rust-windowing/winit", rev = "4c39b3188cee29548761b57f38e4aa046cbe31ea" }
 
 [build-dependencies]
 bindgen = "*"
