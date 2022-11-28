@@ -65,7 +65,7 @@ use winit::platform::windows::{EventLoopExtWindows, WindowBuilderExtWindows};
 #[cfg(target_os = "linux")]
 use winit::platform::unix::EventLoopExtUnix;
 
-static SWAPCHAIN_COLOUR_FORMAT: vk::Format = vk::Format::B8G8R8A8_SRGB;
+static SWAPCHAIN_COLOUR_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
 pub const NUM_VIEWS: usize = 2; // TODO: Make dynamic
 pub const VIEWPORT_HEIGHT: u32 = 1000;
 pub const VIEWPORT_WIDTH: u32 = 1000;
