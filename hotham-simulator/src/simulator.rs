@@ -34,6 +34,7 @@ use openxr_sys::{
     VulkanInstanceCreateInfoKHR, FALSE, TRUE,
 };
 use rand::random;
+use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use std::cell::{Ref, RefCell};
 use std::sync::Arc;
 use std::{
@@ -169,9 +170,10 @@ pub unsafe extern "system" fn create_vulkan_instance(
         .unwrap();
 
     let mut create_info = *vulkan_create_info;
-    let mut enabled_extensions = ash_window::enumerate_required_extensions(&window)
-        .unwrap()
-        .to_vec();
+    let mut enabled_extensions =
+        ash_window::enumerate_required_extensions(window.raw_display_handle())
+            .unwrap()
+            .to_vec();
     let xr_extensions = slice::from_raw_parts(
         create_info.pp_enabled_extension_names,
         create_info.enabled_extension_count as usize,
@@ -1427,7 +1429,7 @@ pub unsafe extern "system" fn get_vulkan_instance_extensions(
         .with_visible(false)
         .build(&event_loop)
         .unwrap();
-    let enabled_extensions = ash_window::enumerate_required_extensions(&window)
+    let enabled_extensions = ash_window::enumerate_required_extensions(window.raw_display_handle())
         .unwrap()
         .to_vec();
     let extensions = enabled_extensions
@@ -1782,7 +1784,16 @@ fn new_swapchain_and_window<T>(
     let close_window = state.close_window.clone();
 
     println!("[HOTHAM_SIMULATOR] Creating surface..");
-    let surface = unsafe { ash_window::create_surface(&entry, &instance, &window, None).unwrap() };
+    let surface = unsafe {
+        ash_window::create_surface(
+            &entry,
+            &instance,
+            window.raw_display_handle(),
+            window.raw_window_handle(),
+            None,
+        )
+        .unwrap()
+    };
     println!("[HOTHAM_SIMULATOR] ..done");
     let swapchain_support_details = SwapChainSupportDetails::query_swap_chain_support(
         &entry,
