@@ -36,6 +36,7 @@ use openxr_sys::{
 use rand::random;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use std::cell::{Ref, RefCell};
+use std::ffi::c_void;
 use std::sync::Arc;
 use std::{
     ffi::{CStr, CString},
@@ -1835,9 +1836,14 @@ fn main_thread_event_loop() -> Arc<RefCell<Option<EventLoop<()>>>> {
     EVENT_LOOP.with(|r| r.clone())
 }
 
+extern "C" {
+    fn sim_openxr_test();
+}
+
 fn openxr_sim_run_main_loop(
     in_state: Option<&mut MutexGuard<State>>,
 ) -> Option<(SurfaceKHR, vk::SwapchainKHR)> {
+    unsafe { sim_openxr_test() };
     let mut ret = None;
     thread_local! {
     static WIN_STATE: (RefCell<Option<EventLoop<()>>>, RefCell<Vec<Window>>, RefCell<Option<std::sync::mpsc::Sender<HothamInputEvent>>>) = (RefCell::new(None), RefCell::new(vec![]), RefCell::new(None));
