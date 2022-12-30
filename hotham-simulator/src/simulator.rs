@@ -51,6 +51,7 @@ use std::{
     thread,
 };
 use winit::event::{DeviceEvent, VirtualKeyCode};
+use winit::event_loop::EventLoopBuilder;
 use winit::window::Window;
 
 use winit::{
@@ -62,7 +63,7 @@ use winit::{
 };
 
 #[cfg(target_os = "windows")]
-use winit::platform::windows::{EventLoopExtWindows, WindowBuilderExtWindows};
+use winit::platform::windows::{EventLoopBuilderExtWindows, WindowBuilderExtWindows};
 
 #[cfg(target_os = "linux")]
 use winit::platform::unix::EventLoopExtUnix;
@@ -129,7 +130,7 @@ pub unsafe extern "system" fn create_instance(
     instance: *mut Instance,
 ) -> Result {
     START.call_once(|| {
-        env_logger::init();
+        let _ = env_logger::try_init();
     });
     *instance = Instance::from_raw(42);
 
@@ -163,7 +164,7 @@ pub unsafe extern "system" fn create_vulkan_instance(
         window
     };
     #[cfg(not(target_os = "macos"))]
-    let event_loop: EventLoop<()> = EventLoop::new_any_thread();
+    let event_loop: EventLoop<()> = EventLoopBuilder::new().with_any_thread(true).build();
     #[cfg(not(target_os = "macos"))]
     let window = WindowBuilder::new()
         .with_visible(false)
@@ -1414,7 +1415,7 @@ pub unsafe extern "system" fn get_vulkan_instance_extensions(
     buffer: *mut c_char,
 ) -> Result {
     #[cfg(not(target_os = "macos"))]
-    let event_loop: EventLoop<()> = EventLoop::new_any_thread();
+    let event_loop: EventLoop<()> = EventLoopBuilder::new().with_any_thread(true).build();
     #[cfg(target_os = "macos")]
     let window: Window = {
         let el = main_thread_event_loop();
@@ -1836,14 +1837,9 @@ fn main_thread_event_loop() -> Arc<RefCell<Option<EventLoop<()>>>> {
     EVENT_LOOP.with(|r| r.clone())
 }
 
-extern "C" {
-    fn sim_openxr_test();
-}
-
 fn openxr_sim_run_main_loop(
     in_state: Option<&mut MutexGuard<State>>,
 ) -> Option<(SurfaceKHR, vk::SwapchainKHR)> {
-    unsafe { sim_openxr_test() };
     let mut ret = None;
     thread_local! {
     static WIN_STATE: (RefCell<Option<EventLoop<()>>>, RefCell<Vec<Window>>, RefCell<Option<std::sync::mpsc::Sender<HothamInputEvent>>>) = (RefCell::new(None), RefCell::new(vec![]), RefCell::new(None));
